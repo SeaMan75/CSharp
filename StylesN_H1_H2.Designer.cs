@@ -45,6 +45,7 @@
             this.button4 = this.Factory.CreateRibbonButton();
             this.button5 = this.Factory.CreateRibbonButton();
             this.button6 = this.Factory.CreateRibbonButton();
+            this.button7 = this.Factory.CreateRibbonButton();
             this.tab1.SuspendLayout();
             this.tab2.SuspendLayout();
             this.groupStyles.SuspendLayout();
@@ -77,6 +78,7 @@
             this.groupStyles.Items.Add(this.button4);
             this.groupStyles.Items.Add(this.button5);
             this.groupStyles.Items.Add(this.button6);
+            this.groupStyles.Items.Add(this.button7);
             this.groupStyles.Label = "Стили";
             this.groupStyles.Name = "groupStyles";
             // 
@@ -122,6 +124,12 @@
             this.button6.Name = "button6";
             this.button6.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.button6_Click);
             // 
+            // button7
+            // 
+            this.button7.Label = "Стиль Заголовок 1 Дополнительный";
+            this.button7.Name = "button7";
+            this.button7.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.button7_Click);
+            // 
             // StylesN_H1_H2
             // 
             this.Name = "StylesN_H1_H2";
@@ -152,6 +160,7 @@
         internal Microsoft.Office.Tools.Ribbon.RibbonButton button4;
         internal Microsoft.Office.Tools.Ribbon.RibbonButton button5;
         internal Microsoft.Office.Tools.Ribbon.RibbonButton button6;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton button7;
     }
 
     partial class ThisRibbonCollection

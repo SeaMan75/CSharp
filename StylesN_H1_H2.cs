@@ -390,5 +390,47 @@ namespace Styles
                 if (doc != null) Marshal.ReleaseComObject(doc);
             }
         }
+
+        private void button7_Click(object sender, RibbonControlEventArgs e)
+        {
+            Word.Document doc = Globals.ThisAddIn.Application.ActiveDocument;
+            Word.Style heading1Style = null;
+            Word.Style additionalHeading1Style = null;
+
+            try
+            {
+                // Получение стиля "Заголовок 1"
+                heading1Style = doc.Styles[Word.WdBuiltinStyle.wdStyleHeading1];
+                if (heading1Style != null)
+                {
+                    // Создание нового стиля "Заголовок 1 Дополнительный"
+                    try
+                    {
+                        additionalHeading1Style = doc.Styles["Заголовок 1 Дополнительный"];
+                    }
+                    catch
+                    {
+                        additionalHeading1Style = doc.Styles.Add("Заголовок 1 Дополнительный", Word.WdStyleType.wdStyleTypeParagraph);
+                    }
+
+                    additionalHeading1Style.Font.AllCaps = 1; // Все буквы заглавные
+                    additionalHeading1Style.set_BaseStyle(heading1Style.NameLocal);
+                }
+                else
+                {
+                    System.Windows.Forms.MessageBox.Show("Стиль 'Заголовок 1' не найден.");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Windows.Forms.MessageBox.Show("Произошла ошибка: " + ex.Message);
+            }
+            finally
+            {
+                if (heading1Style != null) Marshal.ReleaseComObject(heading1Style);
+                if (additionalHeading1Style != null) Marshal.ReleaseComObject(additionalHeading1Style);
+                if (doc != null) Marshal.ReleaseComObject(doc);
+            }
+        }
     }
 }
