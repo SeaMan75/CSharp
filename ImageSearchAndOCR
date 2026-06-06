@@ -1,0 +1,219 @@
+// /*/ nuget -\OpenCvSharp4; nuget -\OpenCvSharp4.runtime.win; nuget -\Sdcb.PaddleOCR; /*/
+/*/ nuget -\OpenCvSharp4.runtime.win; nuget -\Sdcb.PaddleOCR; /*/
+#define _TEMP_DONT_USE
+using OpenCvSharp;
+using System.Drawing;
+using System.Drawing.Imaging;
+using SysPoint = System.Drawing.Point;
+using Sdcb.PaddleOCR;
+using Sdcb.PaddleOCR.Models;
+
+// Загрузка из base64
+Mat LoadImageFromBase64(string base64) {
+    if (base64.StartsWith("image:")) base64 = base64[6..];
+    byte[] bytes = Convert.FromBase64String(base64);
+    return Mat.FromImageData(bytes);
+}
+// see: https://www.google.com/search?smstk=ChhaTUlXd0ZBMVZYSkxuMFgxNUJ6K3hCYz0QAQ%3D%3D&smstidx=5&q=alternative+to.sikuli+ide&udm=50&csuir=1&aep=34&kgs=7bd5bdcde6637f45&shem=epsdc%2Crimspwouoe&shndl=37&shmd=H4sIAAAAAAAA_3WOMU_DMBCFVSbUBYkNJosRiZguDAipPyW6xpZjkdiR7ZKMSRAqAxJ_hYGiqIWwM939o7oIJsR0p_e99-6meDBtgvReOsgCox5HWuEHjow6fMcR33BNPYtaHLiJeoQv9BDJKw7U09M-s8YNddTPGQ64xYFFc_fN8DMat3RPK3rENaM2krjEjoGe56c3eQiVv-a8rutE-QBBZ0lmS-4luCy_qJwtLQddpj4HJ9OQL8uFAV0klVFnx79pZa0qZAKan59AEaQzsehOsmATr2-XhWZayKY9aifD4dck_e-oLkFJzxcOjNBG_dSqVDkQWprAZ80fLY15I8CJdHZ1Kar9Xzv2LhrpUwEAAA&shmds=v1_ATWGeeOz6wGeBLjumyclDkhWaeFbWgAW1CNGnYSRpUE2gGIHXQ&source=sh%2Fx%2Faim%2Fm1%2F1&mtid=ihskaqX2JY-W1fIPjJWTwQw
+
+// see: https://libreautomate.com/cookbook/Take%20screenshot.html
+
+
+#if TEMP_DONT_USE
+/// <summary>
+/// Распознаёт текст в заданной области экрана с помощью PaddleOCR.
+/// </summary>
+/// <param name="searchArea">Область экрана (например, w.ClientRect).</param>
+/// <param name="language">Язык модели: "ch", "en", "ch_en" и т.д. По умолчанию "en".</param>
+/// <returns>Распознанный текст.</returns>
+string ReadTextPaddle(RECT searchArea, string language = "en") {
+    // Захват скриншота
+    using var bmp = CaptureScreen.Image(searchArea);
+    // Конвертируем в формат, понятный PaddleOCR (можно использовать Mat или Bitmap)
+    using var ms = new MemoryStream();
+    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+    ms.Position = 0;
+    
+    // Загрузка модели (при первом вызове может скачать)
+    var model = PaddleOCRLocalModel.Create(language, detectionModelVersion: "PP-OCRv4");
+    
+    // Создание движка
+    using var engine = new PaddleOcrEngine(model);
+    
+    // Распознавание
+    var results = engine.Run(ms);
+    
+    // Сборка текста из всех найденных блоков
+    var sb = new StringBuilder();
+    foreach (var block in results) {
+        sb.AppendLine(block.Text);
+    }
+    return sb.ToString().Trim();
+}
+#endif
+
+SysPoint? FindImageTemplate(RECT searchArea, string base64Image, double threshold = 0.8, double timeout = 3) {
+    using var needle = LoadImageFromBase64(base64Image);
+    if (needle.Empty()) return null;
+
+    var sw = Stopwatch.StartNew();
+    do {
+        using var bmp = CaptureScreen.Image(searchArea);
+        using var ms = new MemoryStream();
+        bmp.Save(ms, ImageFormat.Png);
+        ms.Position = 0;
+        using var haystack = Mat.FromImageData(ms.ToArray());
+
+        using var result = new Mat();
+        Cv2.MatchTemplate(haystack, needle, result, TemplateMatchModes.CCoeffNormed);
+
+        double minVal, maxVal;
+        OpenCvSharp.Point minLoc, maxLoc;
+        Cv2.MinMaxLoc(result, out minVal, out maxVal, out minLoc, out maxLoc);
+
+        if (maxVal >= threshold) {
+            return new SysPoint(
+                searchArea.left + maxLoc.X + needle.Width / 2,
+                searchArea.top + maxLoc.Y + needle.Height / 2
+            );
+        }
+
+        if (timeout > 0) 50.ms();
+    } while (sw.Elapsed.TotalSeconds < timeout);
+
+    return null;
+}
+
+
+//Template Matching — для мелких иконок (кнопки, значки)
+SysPoint? FindImageOrbSimple(RECT searchArea, string base64Image, double timeout = 3) {
+    using var needle = LoadImageFromBase64(base64Image);
+    if (needle.Empty()) return null;
+
+    var orb = ORB.Create(nFeatures: 2000, fastThreshold: 10); // мягче порог FAST
+    var bf = new BFMatcher(NormTypes.Hamming);
+
+    KeyPoint[] needleKp;
+    Mat needleDesc = new();
+    orb.DetectAndCompute(needle, null, out needleKp, needleDesc);
+    if (needleKp.Length < 2) return null;
+
+    // Автоматически задаём minGoodMatches как 30% от точек образца, но не меньше 4
+    int minGood = Math.Max(4, (int)(needleKp.Length * 0.3));
+
+    var sw = Stopwatch.StartNew();
+    do {
+        using var bmp = CaptureScreen.Image(searchArea);
+        using var ms = new MemoryStream();
+        bmp.Save(ms, ImageFormat.Png);
+        ms.Position = 0;
+        using var haystack = Mat.FromImageData(ms.ToArray());
+
+        KeyPoint[] haystackKp;
+        Mat haystackDesc = new();
+        orb.DetectAndCompute(haystack, null, out haystackKp, haystackDesc);
+
+        var matches = bf.KnnMatch(needleDesc, haystackDesc, k: 2);
+        var good = matches.Where(m => m.Length == 2 && m[0].Distance < 0.8 * m[1].Distance).ToArray();
+
+        if (good.Length >= minGood) {
+            // Среднее смещение по хорошим совпадениям (без гомографии)
+            int sumX = 0, sumY = 0;
+            foreach (var m in good) {
+                var pt = haystackKp[m[0].TrainIdx].Pt;
+                sumX += (int)pt.X;
+                sumY += (int)pt.Y;
+            }
+            return new SysPoint(
+                searchArea.left + sumX / good.Length,
+                searchArea.top + sumY / good.Length
+            );
+        }
+
+        if (timeout > 0) 50.ms();
+    } while (sw.Elapsed.TotalSeconds < timeout);
+
+    return null;
+}
+
+
+ 
+/// <summary>
+/// Надёжный поиск изображения через OpenCV (ORB + гомография).
+/// Устойчив к сглаживанию, небольшим поворотам и перерисовке.
+/// </summary>
+/// <param name="searchArea">Прямоугольник области поиска (например, w.ClientRect, screen.primary.Rect).</param>
+/// <param name="base64Image">Образец в base64.</param>
+/// <param name="minGoodMatches">Минимальное число хороших совпадений (по умолчанию 10).</param>
+/// <param name="timeout">Время ожидания в секундах (0 – без ожидания).</param>
+/// <returns>Центр найденного изображения или null.</returns>
+SysPoint? FindImageRobust(RECT searchArea, string base64Image, int minGoodMatches = 10, double timeout = 3) {
+    using var needle = LoadImageFromBase64(base64Image);
+    if (needle.Empty()) return null;
+
+    var orb = ORB.Create(5000);
+    var bf = new BFMatcher(NormTypes.Hamming);
+    
+    KeyPoint[] needleKp;
+    Mat needleDesc = new();
+    orb.DetectAndCompute(needle, null, out needleKp, needleDesc);
+    if (needleKp.Length < 4) { print.it("⚠️ Мало ключевых точек в образце"); return null; }
+
+    var sw = Stopwatch.StartNew();
+    do {
+        // Захват области экрана (документированный способ)
+        using var bmp = CaptureScreen.Image(searchArea);
+        // Конвертация Bitmap -> Mat
+        using var ms = new MemoryStream();
+        bmp.Save(ms, ImageFormat.Png);
+        ms.Position = 0;
+        using var haystack = Mat.FromImageData(ms.ToArray());
+
+        KeyPoint[] haystackKp;
+        Mat haystackDesc = new();
+        orb.DetectAndCompute(haystack, null, out haystackKp, haystackDesc);
+
+        var matches = bf.KnnMatch(needleDesc, haystackDesc, k: 2);
+        var good = matches.Where(m => m.Length == 2 && m[0].Distance < 0.75 * m[1].Distance).ToArray();
+
+        if (good.Length >= minGoodMatches && good.Length >= 4) {
+            var srcPts = good.Select(m => needleKp[m[0].QueryIdx].Pt).ToArray();
+            var dstPts = good.Select(m => haystackKp[m[0].TrainIdx].Pt).ToArray();
+
+            var homography = Cv2.FindHomography(
+                InputArray.Create(srcPts), InputArray.Create(dstPts),
+                HomographyMethods.Ransac, ransacReprojThreshold: 3
+            );
+            if (homography != null && !homography.Empty()) {
+                Point2f[] centerPoint = { new Point2f(needle.Width / 2f, needle.Height / 2f) };
+                var transformed = Cv2.PerspectiveTransform(centerPoint, homography);
+                // Координаты относительно левого верхнего угла searchArea
+                return new SysPoint(
+                    searchArea.left + (int)transformed[0].X,
+                    searchArea.top + (int)transformed[0].Y
+                );
+            }
+        }
+        if (timeout > 0) 50.ms();
+    } while (sw.Elapsed.TotalSeconds < timeout);
+
+    return null;
+}
+// ========== ПРИМЕР ==========
+var w = wnd.find(1, "LibreAutomate"); // или default(IFArea) для всего экрана
+
+var t = ocr.find(1, w, "Script60");
+t.MouseClick();
+
+
+
+string image = @"image:iVBORw0KGgoAAAANSUhEUgAAAH8AAABfCAYAAADBERglAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAAAatSURBVHhe7Zs/q+VEFMADFrZ2gp9AsHkWFrcS/AI27wNY3MZW5VUiglbixcLlVm4hiIWdlwUtxBVWEXXV5SEXWZRVERdRERRkfc1IkpnczPkzmbxcJyczp/gVb5LMzMtvkpzcnFPd/euaubg4H+TXv983z16vGm7+8krT9uEPZ83fz12/D+2vyKeCDRx9+d/+drVp++ruxrz8yUMNcH9FPpPkK8smofxrZrOqTFX5rDZxjx0e2+/qzOzRtmOA5+3PGW9vOTGbPexLFmnk706Jk9a2o7bRTJW/NeuqMusdbD83F/szs6LmHXu8cBLIt3LWW2KbAKxgLC923io/QHtyhk/iTHDym7vVqdnB/SHN8fJv8RQJ5J+b3XrMM5B4htqF0/RT397tY8Td6rt228d+c2LF4b76ktt5DYyF5gdQ+UPYq78nDO9zuAr9u8TWrPtC0HYsqpWPF5xr965y8srv3fLdQrOg5z/YPvg/CiKR/JaDFPoEQYmQVj6+FcPjSMnMvrT8drGuVif+QuMCVw+30PE8pZFUvoO+MocDJySOaT/c9nEfaFtAPjUWOp7ELp7gIpmfWeS3gBNMSvCBkrn2kCC0jRw3EOk3V//QMz5wvCBmlA9EkBJ8oGSuHQnmxgyM2/RJyVP5x5HvP8OHTxiUzLW3gilBxBiMfO5Vr+mbmINH1I9D85NAfn17xyeRDJ5c5ByK9okTD9sPMYU/Lh0wcs9n4pdDO7/+QtlvTsEi4+MFaSSSD16FULAX3t+dbCjZAdu7W7t7deyA4i391zVv4cHfCfCcvTcYC15IMqmufPmY4bj9+5vdjpeXnx70XFdIKieU4u1vnux2/PHPd7r27/54C3UkCZUfR1B+zdVbT5hPf37JvH7z0ebvOmvnn3tfoI4kofLjGJQPee/7p1En0lD5cUTLr1O1PrjzjLn379eoE2WZREf7Sn6o/IJR+QWj8gumql/hzj66HwV4Q7xw4wHzxq3Hxb/zKzzR0T5H/d4v/Rc/haZ69bOHzY2fnm9+yAlRv+Y54S9+/KB59/ZTzdVf//3a54+gjhX5VFqrVy7RAR/1YUdr9ZbNJPnKskkoH34bP9a3byLp4qjgeQfnTKafyySNfCprx7ajttFMlR/IGr5EOlabLaTyLUTenCS4HL7LzLufOTTmuJlIID/zWr2OdrGsNtvxi2YmEsh3t0Kc/0aDn7HuRHa5epJq9bgxVb4j41o91IfKJ/EyXYlFACVC6NRrfBwpmdmXlj+mVg/Khn/LJal8B31lBqJuCxLHtIfSuNC2gHxqLHg8XpAqP4IMavXI0q3AscKYUT4QQUrwgZK5diSYGzMwbtMnJbATjoNJCtivJGaV798yh68YKJlrbwXDK5IZg5HPveo1fRNzCI4hlATy867Vw6j8Hrj2Dgd74f3dyYaSHbC9u7UnqNXDLEg+rM/TWr1yCKZxaa1e3gTl12itXr4MyodorV4+RMvXWr38iI72lfxQ+QWj8gtG5ReM1uoVTHS0z6G1estFa/UKRmv1CiY64KM+7Git3rKZJF9ZNgnlw2/jLTiJYixE0sVRwfP254zzD5bwLb8mjXwqa8e2o7bRTJUfyBqOqNWrPyJRdQBLWAAJ5AvPbOFy+CbMeylfFRPIL6VWDx4bk/I1Lwnku8TJ2JOBn7Fu4XS5egJr9foMZ/jKIIn87Gv1+izkqq9JJL/lIIVeBFAihE69xseRkpl9afljavXAHSQwf2kkle+gr8xA1G1B4pj2UMCFtgXkU2Oh4yHu7kUcK41Z5LdkUKsHt4E+4R1CGjPKByJICT5QMteOBHNjBsZt+rysfLYKSBazyvef4YGrrb9/tHxKEDEGI5971YuK5Lk+hZFAfs61eluzRvPh4wVpJJIP3qVRsBfe351sKNkB27tbuwu+OqB4y4RaPS/St+CFJBOt1SuYYBqX1urlTVB+jdbq5cugfIjW6uVDtHyt1cuP6GhfyQ+VXzAqv2BUfsForV7BREf7HFqrt1y0Vq9gtFavYKIDPurDjtbqLZtJ8pVlk1A+/DZ+rG/fRNLFUcHzhnM+JI9Y/re5HJc08qmsHduO2kYzVX4gazgiERN/RJo6n3QkkE/kzUmCzbeLm/d+t8WS2T5lkUB+gbV6bF6gLBLId3luOP+NBj9jUf2c8Fo9dkEJI4l8LykzdEJdwmUoexdtx6IOAdgMtXpkHCCTRPJbvKiYWARQIoROvcbHkZKZfWn542r1PGL2EUJS+Q76ygxE3RYkjmkPXXloW0A+NRY6Hs5jIeJr/gMuF4zybBa2NgAAAABJRU5ErkJggg==";
+//var pt = FindImageRobust(w.Rect, image, minGoodMatches: 1, timeout: 3);
+var pt = FindImageTemplate(w.Rect, image, threshold: 0.85, timeout: 3);
+if (pt != null) {
+    mouse.move(pt.Value);
+    mouse.click();
+    print.it("Найдено и кликнуто");
+} else {
+    print.it("Не найдено");
+}
