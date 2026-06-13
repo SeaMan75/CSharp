@@ -263,6 +263,11 @@
     <AppDesigner Include="Properties\" />
   </ItemGroup>
   <PropertyGroup>
+  <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\Styles.xml</DocumentationFile>
+</PropertyGroup>
+<NoWarn>1591</NoWarn>  
+  <PropertyGroup>
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>
     <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
   </PropertyGroup>

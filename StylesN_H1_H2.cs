@@ -16,7 +16,84 @@ namespace Styles
         private Word.Application App => Globals.ThisAddIn.Application;
         private Word.Document Doc => App.ActiveDocument;
 
-        // ✅ НОВОЕ: типы inline-форматирования
+        // В классе символов regex [...] дефис должен быть ПЕРВЫМ, чтобы не восприниматься как диапазон
+
+        /*
+        Что включено в BulletMarkers:
+            - — обычный дефис (минус)
+            * — звёздочка
+            – — средняя черта (en dash, U+2013)
+            — — длинная черта (em dash, U+2014)
+            • — круглый буллет (bullet, U+2022)
+            · — центрированная точка (middle dot, U+00B7) — иногда нейросети используют и её  
+         */
+        /// <summary>
+        /// Набор символов-маркеров для распознавания маркированных списков в Markdown.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Используется во всех регулярных выражениях, отвечающих за парсинг маркированных списков
+        /// (распознавание строки как элемента списка, сбор вложенных элементов, удаление маркера из текста).
+        /// </para>
+        /// <para>
+        /// <b>Состав набора:</b>
+        /// <list type="table">
+        ///   <listheader>
+        ///     <term>Символ</term>
+        ///     <description>Описание</description>
+        ///   </listheader>
+        ///   <item>
+        ///     <term><c>-</c></term>
+        ///     <description>Обычный дефис/минус (U+002D) — стандартный маркер Markdown.</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>*</c></term>
+        ///     <description>Звёздочка (U+002A) — альтернативный маркер Markdown.</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>–</c></term>
+        ///     <description>Средняя черта / en dash (U+2013) — часто генерируется нейросетями.</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>—</c></term>
+        ///     <description>Длинная черта / em dash (U+2014) — часто генерируется нейросетями.</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>•</c></term>
+        ///     <description>Круглый буллет (U+2022) — встречается в ответах некоторых LLM.</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>·</c></term>
+        ///     <description>Центрированная точка / middle dot (U+00B7) — редкий, но возможный вариант.</description>
+        ///   </item>
+        /// </list>
+        /// </para>
+        /// <para>
+        /// <b>Важно:</b> дефис <c>-</c> в классе символов regex <c>[...]</c> должен стоять ПЕРВЫМ,
+        /// иначе он будет интерпретирован как обозначение диапазона (например, <c>[a-z]</c>).
+        /// </para>
+        /// </remarks>
+        /// <value>
+        /// Строка-шаблон для подстановки в регулярные выражения вида <c>^\s*{BulletMarkers}\s+</c>.
+        /// </value>
+        /// <example>
+        /// Пример использования в регулярном выражении:
+        /// <code>
+        /// // Распознавание строки как элемента маркированного списка
+        /// if (Regex.IsMatch(line, $@"^\s*{BulletMarkers}\s+"))
+        /// {
+        ///     InsertBulletedList(selection, listLines);
+        /// }
+        /// 
+        /// // Удаление маркера из строки
+        /// string cleanLine = Regex.Replace(line, $@"^\s*{BulletMarkers}\s+", "");
+        /// </code>
+        /// </example>
+        /// <seealso cref="InsertBulletedList"/>
+        /// <seealso cref="ApplyDashListStyle"/>
+        private const string BulletMarkers = @"[-*–—•·]";
+
+        // типы inline-форматирования
         private enum InlineFormat
         {
             None = 0,
@@ -283,14 +360,7 @@ namespace Styles
             {
                 MessageBox.Show("Произошла ошибка: " + ex.Message);
             }
-            // ❌ УДАЛЕНО: finally с Marshal.ReleaseComObject
         }
-
-
-
-
-        // В button8_Click через button11_Click ошибок нет - они правильно работают с объектами
-        // без создания новых Font/ParagraphFormat через new
 
         private void button8_Click(object sender, RibbonControlEventArgs e)
         {
@@ -332,7 +402,6 @@ namespace Styles
                 MessageBox.Show("Выделенная таблица не найдена.");
             }
         }
-
         private void button9_Click(object sender, RibbonControlEventArgs e)
         {
             var doc = Doc;
@@ -437,7 +506,6 @@ namespace Styles
                 MessageBox.Show("Выделенная картинка не найдена.");
             }
         }
-
         private void button11_Click(object sender, RibbonControlEventArgs e)
         {
             var doc = Doc;
@@ -540,7 +608,6 @@ namespace Styles
             {
                 MessageBox.Show("Произошла ошибка: " + ex.Message);
             }
-            // ❌ УДАЛЕНО: finally с Marshal.ReleaseComObject
         }
 
         private void setIndent()
@@ -1140,7 +1207,7 @@ namespace Styles
                             progressForm.UpdateProgress(i, totalLines, "Вставка нумерованного списка...");
                             var listLines = new List<string>();
                             while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*\d+\.\s+") ||
-                                   Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
+                                   Regex.IsMatch(lines[i], $@"^\s*{BulletMarkers}\s+") ||
                                    (lines[i].StartsWith("  ") && listLines.Count > 0)))
                             {
                                 listLines.Add(lines[i]);
@@ -1150,12 +1217,12 @@ namespace Styles
                             InsertNumberedList(selection, listLines);
                             continue;
                         }
-                        else if (Regex.IsMatch(line, @"^\s*[-*]\s+"))
+                        else if (Regex.IsMatch(line, $@"^\s*{BulletMarkers}\s+"))
                         {
                             progressForm.UpdateProgress(i, totalLines, "Вставка маркированного списка...");
                             var listLines = new List<string>();
-                            while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
-                                   (lines[i].StartsWith("  ") && listLines.Count > 0)))
+                            while (i < lines.Length && (Regex.IsMatch(lines[i], $@"^\s*{BulletMarkers}\s+") ||
+                                    (lines[i].StartsWith("  ") && listLines.Count > 0)))
                             {
                                 listLines.Add(lines[i]);
                                 i++;
@@ -1296,7 +1363,7 @@ namespace Styles
 
         private void InsertBulletedList(Word.Selection selection, List<string> listLines)
         {
-            // ✅ Запоминаем позицию перед вставкой всего списка
+            // Запоминаем позицию перед вставкой всего списка
             int startPos = selection.Range.Start;
 
             // Вставляем все элементы списка
@@ -1312,7 +1379,7 @@ namespace Styles
                 int indentLevel = spaces / 4;
 
                 // Убираем маркер и пробелы в начале
-                string cleanLine = Regex.Replace(line, @"^\s*[-*]\s+", "");
+                string cleanLine = Regex.Replace(line, $@"^\s*{BulletMarkers}\s+", "");
 
                 selection.TypeText(cleanLine);
                 selection.InsertParagraphAfter();
@@ -1371,7 +1438,7 @@ namespace Styles
         }
 
         /// <summary>
-        /// ✅ НОВОЕ: Вставка списка задач с чекбоксами (☐ / ☑)
+        /// Вставка списка задач с чекбоксами (☐ / ☑)
         /// </summary>
         private void InsertTaskList(Word.Selection selection, string line)
         {
@@ -1401,11 +1468,6 @@ namespace Styles
             selection.SetRange(endPos, endPos);
             selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
         }
-
-
-
-
-
 
         /// <summary>
         /// ✅ НОВОЕ: вставка блока кода ``` ... ``` с Courier New, одинарным интервалом, без отступов
@@ -1520,7 +1582,7 @@ namespace Styles
             var range = selection.Range;
             var table = Doc.Tables.Add(range, rowCount, colCount);
 
-            // ✅ НОВОЕ: Явно задаем стандартные черные границы для всей таблицы
+            // Явно задаем стандартные черные границы для всей таблицы
             table.Borders.InsideLineStyle = Word.WdLineStyle.wdLineStyleSingle;
             table.Borders.OutsideLineStyle = Word.WdLineStyle.wdLineStyleSingle;
             table.Borders.InsideLineWidth = Word.WdLineWidth.wdLineWidth050pt;
@@ -1565,20 +1627,19 @@ namespace Styles
         }
 
         /// <summary>
-        /// ✅ НОВОЕ: применяет inline-форматирование Markdown к диапазону:
+        /// применяет inline-форматирование Markdown к диапазону:
         /// **bold**, *italic*, __underline__, ~~strikethrough~~, `code`
         /// Работает с конца к началу, чтобы удаление маркеров не сбивало позиции.
         /// </summary>
         /// <summary>
-        /// ✅ ОБНОВЛЕНО: применяет inline-форматирование с использованием строгих регулярных выражений,
+        /// применяет inline-форматирование с использованием строгих регулярных выражений,
         /// которые гарантированно не конфликтуют друг с другом (*** vs ** vs *).
         /// </summary>
         /// <summary>
-        /// ✅ ПУЛЕНЕПРОБИВАЕМАЯ ВЕРСИЯ: применяет inline-форматирование.
+        /// применяет inline-форматирование.
         /// Использует строгие regex и безопасное удаление маркеров через .Delete().
         /// </summary>
         /// <summary>
-        /// ✅ ФИНАЛЬНАЯ, ПУЛЕНЕПРОБИВАЕМАЯ ВЕРСИЯ.
         /// Использует одно единое регулярное выражение с именованными группами.
         /// Приоритет строго задан порядком: *** -> ** -> *
         /// Это физически исключает ситуацию, когда ** срабатывает внутри ***.
@@ -1602,7 +1663,7 @@ namespace Styles
 
             var edits = new List<InlineEdit>();
 
-            // ✅ ОБНОВЛЕННЫЙ REGEX: добавлены Link и Image. Порядок приоритета сохранен!
+            // ОБНОВЛЕННЫЙ REGEX: добавлены Link и Image. Порядок приоритета сохранен!
             string pattern = @"(?<code>`(?<codeInner>[^`]+)`)|" +
                              @"(?<bolditalic>\*{3}(?<biInner>.*?)\*{3})|" +
                              @"(?<bold>\*{2}(?<bInner>.*?)\*{2})|" +
@@ -1699,16 +1760,16 @@ namespace Styles
                     {
                         case InlineFormat.Bold:
                             innerRange.Font.Bold = 1;
-                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ для вложенности!
+                            ApplyInlineFormatting(innerRange); // РЕКУРСИЯ для вложенности!
                             break;
                         case InlineFormat.Italic:
                             innerRange.Font.Italic = 1;
-                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ
+                            ApplyInlineFormatting(innerRange); // РЕКУРСИЯ
                             break;
                         case InlineFormat.BoldItalic:
                             innerRange.Font.Bold = 1;
                             innerRange.Font.Italic = 1;
-                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ
+                            ApplyInlineFormatting(innerRange); // РЕКУРСИЯ
                             break;
                         case InlineFormat.Underline:
                             innerRange.Font.Underline = Word.WdUnderline.wdUnderlineSingle;
@@ -1812,7 +1873,7 @@ namespace Styles
                 ProgressBar.Value = Math.Min(currentLine, ProgressBar.Maximum);
                 StatusLabel.Text = $"{currentAction} (строка {currentLine} из {totalLines})";
 
-                // ✅ Ключевой момент для VSTO: позволяем форме перерисоваться и Word'у обработать сообщения
+                // Ключевой момент для VSTO: позволяем форме перерисоваться и Word'у обработать сообщения
                 System.Windows.Forms.Application.DoEvents();
             }
         }
