@@ -19,22 +19,27 @@ namespace Styles
         // ✅ НОВОЕ: типы inline-форматирования
         private enum InlineFormat
         {
+            None = 0,
             Bold,
             Italic,
             BoldItalic,
             Underline,
             Strikethrough,
-            Code
+            Code,
+            Link,
+            Image
         }
 
         // ✅ НОВОЕ: структура для хранения найденной inline-правки
+        // ✅ ОБНОВЛЕНО: добавлено свойство extraData для хранения URL ссылок и картинок
         private class InlineEdit
         {
-            public int fullStart;   // начало всего match (включая маркеры)
-            public int fullEnd;     // конец всего match (включая маркеры)
-            public int innerStart;  // начало внутреннего текста
-            public int innerEnd;    // конец внутреннего текста
+            public int fullStart;      // начало всего match (включая маркеры)
+            public int fullEnd;        // конец всего match (включая маркеры)
+            public int innerStart;     // начало внутреннего текста
+            public int innerEnd;       // конец внутреннего текста
             public InlineFormat format;
+            public string extraData;   // здесь будем хранить URL для ссылок и картинок
         }
 
         private void StylesN_H1_H2_Load(object sender, RibbonUIEventArgs e)
@@ -281,8 +286,8 @@ namespace Styles
             // ❌ УДАЛЕНО: finally с Marshal.ReleaseComObject
         }
 
-       
-      
+
+
 
         // В button8_Click через button11_Click ошибок нет - они правильно работают с объектами
         // без создания новых Font/ParagraphFormat через new
@@ -771,7 +776,7 @@ namespace Styles
                  */
 
 
-                level.NumberFormat = "\u2014"; 
+                level.NumberFormat = "\u2014";
 
                 // Выравнивание маркера
                 level.Alignment = Word.WdListLevelAlignment.wdListLevelAlignLeft;
@@ -1051,118 +1056,134 @@ namespace Styles
                     return;
                 }
 
-                // Разбиваем текст на строки
                 string[] lines = markdownText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+                int totalLines = lines.Length;
 
-                int i = 0;
-                while (i < lines.Length)
+                // ✅ НОВОЕ: Создаем и показываем форму прогресса
+                using (var progressForm = new MarkdownProgressForm(totalLines))
                 {
-                    string line = lines[i];
+                    progressForm.Show();
 
-                    // Пропускаем пустые строки (но добавляем абзац)
-                    if (string.IsNullOrWhiteSpace(line))
+                    int i = 0;
+                    while (i < lines.Length)
                     {
-                        selection.InsertParagraphAfter();
-                        selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
+                        string line = lines[i];
+
+                        // ✅ Обновляем прогресс-бар каждые 50 строк (или на последней строке)
+                        if (i % 50 == 0 || i == totalLines - 1)
+                        {
+                            progressForm.UpdateProgress(i, totalLines, "Обработка текста...");
+                        }
+
+                        if (string.IsNullOrWhiteSpace(line))
+                        {
+                            selection.InsertParagraphAfter();
+                            selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
+                            i++;
+                            continue;
+                        }
+
+                        if (IsHorizontalRule(line))
+                        {
+                            i++;
+                            continue;
+                        }
+
+                        if (line.TrimStart().StartsWith("```"))
+                        {
+                            progressForm.UpdateProgress(i, totalLines, "Вставка блока кода...");
+                            var codeLines = new List<string>();
+                            i++;
+                            while (i < lines.Length && !lines[i].TrimStart().StartsWith("```"))
+                            {
+                                codeLines.Add(lines[i]);
+                                i++;
+                            }
+                            if (i < lines.Length) i++;
+
+                            InsertCodeBlock(selection, codeLines);
+                            continue;
+                        }
+
+                        if (line.TrimStart().StartsWith("|") && line.TrimEnd().EndsWith("|"))
+                        {
+                            progressForm.UpdateProgress(i, totalLines, "Вставка таблицы...");
+                            var tableLines = new List<string>();
+                            while (i < lines.Length && lines[i].TrimStart().StartsWith("|") && lines[i].TrimEnd().EndsWith("|"))
+                            {
+                                tableLines.Add(lines[i]);
+                                i++;
+                            }
+
+                            InsertMarkdownTable(selection, tableLines);
+                            continue;
+                        }
+
+                        if (line.StartsWith("#### "))
+                        {
+                            InsertHeading(selection, line.Substring(5), 4);
+                        }
+                        else if (line.StartsWith("### "))
+                        {
+                            InsertHeading(selection, line.Substring(4), 3);
+                        }
+                        else if (line.StartsWith("## "))
+                        {
+                            InsertHeading(selection, line.Substring(3), 2);
+                        }
+                        else if (line.StartsWith("# "))
+                        {
+                            InsertHeading(selection, line.Substring(2), 1);
+                        }
+                        else if (Regex.IsMatch(line, @"^\s*\d+\.\s+"))
+                        {
+                            progressForm.UpdateProgress(i, totalLines, "Вставка нумерованного списка...");
+                            var listLines = new List<string>();
+                            while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*\d+\.\s+") ||
+                                   Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
+                                   (lines[i].StartsWith("  ") && listLines.Count > 0)))
+                            {
+                                listLines.Add(lines[i]);
+                                i++;
+                            }
+
+                            InsertNumberedList(selection, listLines);
+                            continue;
+                        }
+                        else if (Regex.IsMatch(line, @"^\s*[-*]\s+"))
+                        {
+                            progressForm.UpdateProgress(i, totalLines, "Вставка маркированного списка...");
+                            var listLines = new List<string>();
+                            while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
+                                   (lines[i].StartsWith("  ") && listLines.Count > 0)))
+                            {
+                                listLines.Add(lines[i]);
+                                i++;
+                            }
+
+                            InsertBulletedList(selection, listLines);
+                            continue;
+                        }
+                        else if (line.StartsWith("> "))
+                                {
+                                    InsertBlockquote(selection, line.Substring(2));
+                                }
+                                // ✅ НОВОЕ: Списки задач (- [ ] или - [x])
+                                else if (Regex.IsMatch(line, @"^\s*[-*]\s*\[\s*[xX\s]\s*\]\s*.*"))
+                                {
+                                    InsertTaskList(selection, line);
+                                }
+                        else
+                        {
+                            InsertNormalText(selection, line);
+                        }
+
                         i++;
-                        continue;
                     }
 
-                    // пропускаем горизонтальные разделители (---, ***, ===, ___)
-                    if (IsHorizontalRule(line))
-                    {
-                        i++;
-                        continue;
-                    }
-
-                    // проверяем блок кода ``` (может быть с указанием языка, например ```csharp)
-                    if (line.TrimStart().StartsWith("```"))
-                    {
-                        var codeLines = new List<string>();
-                        i++; // пропускаем открывающий ``` (вместе с языком — он игнорируется)
-                        while (i < lines.Length && !lines[i].TrimStart().StartsWith("```"))
-                        {
-                            codeLines.Add(lines[i]);
-                            i++;
-                        }
-                        if (i < lines.Length) i++; // пропускаем закрывающий ```
-                        
-                        InsertCodeBlock(selection, codeLines);
-                        continue;
-                    }
-
-                    // Проверяем, является ли это таблицей Markdown
-                    if (line.TrimStart().StartsWith("|") && line.TrimEnd().EndsWith("|"))
-                    {
-                        // Собираем все строки таблицы
-                        var tableLines = new List<string>();
-                        while (i < lines.Length && lines[i].TrimStart().StartsWith("|") && lines[i].TrimEnd().EndsWith("|"))
-                        {
-                            tableLines.Add(lines[i]);
-                            i++;
-                        }
-
-                        // Вставляем таблицу
-                        InsertMarkdownTable(selection, tableLines);
-                        continue;
-                    }
-
-                    // Проверяем заголовки
-                    if (line.StartsWith("#### "))
-                    {
-                        InsertHeading(selection, line.Substring(5), 4);
-                    }
-                    else if (line.StartsWith("### "))
-                    {
-                        InsertHeading(selection, line.Substring(4), 3);
-                    }
-                    else if (line.StartsWith("## "))
-                    {
-                        InsertHeading(selection, line.Substring(3), 2);
-                    }
-                    else if (line.StartsWith("# "))
-                    {
-                        InsertHeading(selection, line.Substring(2), 1);
-                    }
-                    // Проверяем нумерованный список (1. , 2. , и т.д.)
-                    else if (Regex.IsMatch(line, @"^\s*\d+\.\s+"))
-                    {
-                        // Собираем все строки списка (включая вложенные)
-                        var listLines = new List<string>();
-                        while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*\d+\.\s+") ||
-                               Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
-                               (lines[i].StartsWith("  ") && listLines.Count > 0)))
-                        {
-                            listLines.Add(lines[i]);
-                            i++;
-                        }
-
-                        InsertNumberedList(selection, listLines);
-                        continue;
-                    }
-                    // Проверяем маркированный список (- , * )
-                    else if (Regex.IsMatch(line, @"^\s*[-*]\s+"))
-                    {
-                        // Собираем все строки списка (включая вложенные)
-                        var listLines = new List<string>();
-                        while (i < lines.Length && (Regex.IsMatch(lines[i], @"^\s*[-*]\s+") ||
-                               (lines[i].StartsWith("  ") && listLines.Count > 0)))
-                        {
-                            listLines.Add(lines[i]);
-                            i++;
-                        }
-
-                        InsertBulletedList(selection, listLines);
-                        continue;
-                    }
-                    // Обычный текст
-                    else
-                    {
-                        InsertNormalText(selection, line);
-                    }
-
-                    i++;
-                }
+                    progressForm.UpdateProgress(totalLines, totalLines, "Завершено!");
+                    System.Threading.Thread.Sleep(300); // Небольшая пауза, чтобы пользователь увидел "Завершено"
+                } // ✅ Форма автоматически закроется здесь благодаря using
             }
             catch (Exception ex)
             {
@@ -1322,7 +1343,76 @@ namespace Styles
         }
 
         /// <summary>
+        /// ✅ НОВОЕ: Вставка цитаты с левой границей
+        /// </summary>
+        private void InsertBlockquote(Word.Selection selection, string text)
+        {
+            int startPos = selection.Range.Start;
+            selection.TypeText(text);
+            int endPos = selection.Range.Start;
+            var range = Doc.Range(startPos, endPos);
+
+            // Применяем inline-форматирование внутри цитаты
+            ApplyInlineFormatting(range);
+
+            // Настраиваем левую границу (полоску)
+            range.Borders[Word.WdBorderType.wdBorderLeft].LineStyle = Word.WdLineStyle.wdLineStyleSingle;
+            range.Borders[Word.WdBorderType.wdBorderLeft].LineWidth = Word.WdLineWidth.wdLineWidth150pt;
+            range.Borders[Word.WdBorderType.wdBorderLeft].Color = Word.WdColor.wdColorGray50;
+
+            // Небольшой отступ слева для красоты
+            range.ParagraphFormat.LeftIndent = App.CentimetersToPoints(1.25f);
+            range.ParagraphFormat.SpaceBefore = 6;
+            range.ParagraphFormat.SpaceAfter = 6;
+
+            selection.SetRange(endPos, endPos);
+            selection.InsertParagraphAfter();
+            selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
+        }
+
+        /// <summary>
+        /// ✅ НОВОЕ: Вставка списка задач с чекбоксами (☐ / ☑)
+        /// </summary>
+        private void InsertTaskList(Word.Selection selection, string line)
+        {
+            int startPos = selection.Range.Start;
+
+            // Определяем состояние чекбокса
+            bool isChecked = Regex.IsMatch(line, @"\[\s*[xX]\s*\]");
+            string checkboxChar = isChecked ? "☑ " : "☐ "; // Unicode символы
+
+            // Убираем маркдаун-синтаксис задачи, оставляем только текст
+            string cleanText = Regex.Replace(line, @"^\s*[-*]\s*\[\s*[xX\s]\s*\]\s*", "");
+
+            selection.TypeText(checkboxChar + cleanText);
+            selection.InsertParagraphAfter();
+            selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
+
+            int endPos = selection.Range.Start;
+            var range = Doc.Range(startPos, endPos);
+
+            // Делаем шрифт для чекбокса чуть крупнее и красивее (Segoe UI Symbol отлично подходит)
+            range.Font.Name = "Segoe UI Symbol";
+
+            // Применяем стандартный отступ, как у списков
+            range.ParagraphFormat.LeftIndent = App.CentimetersToPoints(1.25f);
+            range.ParagraphFormat.FirstLineIndent = App.CentimetersToPoints(-1.25f); // Выступ для маркера
+
+            selection.SetRange(endPos, endPos);
+            selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
+        }
+
+
+
+
+
+
+        /// <summary>
         /// ✅ НОВОЕ: вставка блока кода ``` ... ``` с Courier New, одинарным интервалом, без отступов
+        /// </summary>
+        /// <summary>
+        /// ✅ ОБНОВЛЕНО: вставка блока кода ``` ... ``` с Courier New, одинарным интервалом, 
+        /// без отступов и БЕЗ интервалов до/после абзаца (SpaceAfter = 0).
         /// </summary>
         private void InsertCodeBlock(Word.Selection selection, List<string> codeLines)
         {
@@ -1338,17 +1428,23 @@ namespace Styles
             int endPos = selection.Range.Start;
             var range = Doc.Range(startPos, endPos);
 
-            // Форматирование блока кода
+            // Базовое форматирование шрифта и междустрочного интервала
             range.Font.Name = "Courier New";
             range.ParagraphFormat.LineSpacingRule = Word.WdLineSpacing.wdLineSpaceSingle;
-            
-            // Убираем отступы у всех абзацев блока
+
+            // ✅ Явно убираем все отступы и интервалы у каждого абзаца внутри блока кода
             foreach (Word.Paragraph p in range.Paragraphs)
             {
                 p.Format.FirstLineIndent = 0;
                 p.Format.LeftIndent = 0;
+                p.Format.RightIndent = 0;
+
+                // ВОТ ЭТО РЕШАЕТ ПРОБЛЕМУ С 8 pt:
+                p.Format.SpaceBefore = 0;
+                p.Format.SpaceAfter = 0;
             }
 
+            // Возвращаем курсор в конец блока кода и добавляем один пустой абзац после него
             selection.SetRange(endPos, endPos);
             selection.InsertParagraphAfter();
             selection.Collapse(Word.WdCollapseDirection.wdCollapseEnd);
@@ -1405,13 +1501,11 @@ namespace Styles
 
             foreach (var line in tableLines)
             {
-                // ✅ ИСПРАВЛЕНО: используем надёжную проверку строки-разделителя
                 if (IsTableSeparator(line)) continue;
 
-                // Разбиваем строку по |
                 string[] cells = line.Split('|')
-                    .Skip(1) // пропускаем первый пустой элемент
-                    .Take(line.Split('|').Length - 2) // пропускаем последний пустой элемент
+                    .Skip(1)
+                    .Take(line.Split('|').Length - 2)
                     .Select(c => c.Trim())
                     .ToArray();
 
@@ -1423,9 +1517,16 @@ namespace Styles
             int rowCount = rows.Count;
             int colCount = rows.Max(r => r.Length);
 
-            // Создаём таблицу в Word
             var range = selection.Range;
             var table = Doc.Tables.Add(range, rowCount, colCount);
+
+            // ✅ НОВОЕ: Явно задаем стандартные черные границы для всей таблицы
+            table.Borders.InsideLineStyle = Word.WdLineStyle.wdLineStyleSingle;
+            table.Borders.OutsideLineStyle = Word.WdLineStyle.wdLineStyleSingle;
+            table.Borders.InsideLineWidth = Word.WdLineWidth.wdLineWidth050pt;
+            table.Borders.OutsideLineWidth = Word.WdLineWidth.wdLineWidth050pt;
+            table.Borders.InsideColor = Word.WdColor.wdColorBlack;
+            table.Borders.OutsideColor = Word.WdColor.wdColorBlack;
 
             // Заполняем таблицу
             for (int i = 0; i < rowCount; i++)
@@ -1434,12 +1535,11 @@ namespace Styles
                 {
                     var cellRange = table.Cell(i + 1, j + 1).Range;
                     cellRange.Text = rows[i][j];
-                    // ✅ НОВОЕ: применяем inline-форматирование к содержимому ячейки
                     ApplyInlineFormatting(cellRange);
                 }
             }
 
-            // Форматируем таблицу (шапка жирным)
+            // Форматируем таблицу (шапка жирным и по центру)
             if (rowCount > 0)
             {
                 var headerRow = table.Rows[1];
@@ -1450,7 +1550,7 @@ namespace Styles
                 }
             }
 
-            // Применяем стиль ко всей таблице
+            // Применяем стиль шрифта ко всей таблице
             table.Select();
             var tableSelection = App.Selection;
             tableSelection.Font.Size = 12;
@@ -1469,139 +1569,146 @@ namespace Styles
         /// **bold**, *italic*, __underline__, ~~strikethrough~~, `code`
         /// Работает с конца к началу, чтобы удаление маркеров не сбивало позиции.
         /// </summary>
+        /// <summary>
+        /// ✅ ОБНОВЛЕНО: применяет inline-форматирование с использованием строгих регулярных выражений,
+        /// которые гарантированно не конфликтуют друг с другом (*** vs ** vs *).
+        /// </summary>
+        /// <summary>
+        /// ✅ ПУЛЕНЕПРОБИВАЕМАЯ ВЕРСИЯ: применяет inline-форматирование.
+        /// Использует строгие regex и безопасное удаление маркеров через .Delete().
+        /// </summary>
+        /// <summary>
+        /// ✅ ФИНАЛЬНАЯ, ПУЛЕНЕПРОБИВАЕМАЯ ВЕРСИЯ.
+        /// Использует одно единое регулярное выражение с именованными группами.
+        /// Приоритет строго задан порядком: *** -> ** -> *
+        /// Это физически исключает ситуацию, когда ** срабатывает внутри ***.
+        /// </summary>
+        /// <summary>
+        /// Использует одно единое регулярное выражение с именованными группами.
+        /// Приоритет строго задан порядком: *** -> ** -> *
+        /// Это физически исключает ситуацию, когда ** срабатывает внутри ***.
+        /// </summary>
+        /// <summary>
+        /// Использует одно единое регулярное выражение с именованными группами.
+        /// Приоритет строго задан порядком: *** -> ** -> *
+        /// Это физически исключает ситуацию, когда ** срабатывает внутри ***.
+        /// </summary>
         private void ApplyInlineFormatting(Word.Range range)
         {
+            if (range == null || string.IsNullOrEmpty(range.Text)) return;
+
             int rangeStart = range.Start;
             string text = range.Text;
 
-            if (string.IsNullOrEmpty(text)) return;
-
             var edits = new List<InlineEdit>();
 
-            // ✅ Inline code: `text` (высший приоритет — обрабатывается первым)
-            foreach (Match m in Regex.Matches(text, @"(?<!`)`([^`]+)`(?!`)"))
-            {
-                edits.Add(new InlineEdit
-                {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.Code
-                });
-            }
+            // ✅ ОБНОВЛЕННЫЙ REGEX: добавлены Link и Image. Порядок приоритета сохранен!
+            string pattern = @"(?<code>`(?<codeInner>[^`]+)`)|" +
+                             @"(?<bolditalic>\*{3}(?<biInner>.*?)\*{3})|" +
+                             @"(?<bold>\*{2}(?<bInner>.*?)\*{2})|" +
+                             @"(?<italic>\*(?<iInner>[^*]*?)\*)|" +
+                             @"(?<underline>_{2}(?<uInner>.*?)_{2})|" +
+                             @"(?<strike>~{2}(?<sInner>.*?)~{2})|" +
+                             @"(?<link>\[(?<linkText>[^\]]*)\]\((?<linkUrl>[^)]+)\))|" +
+                             @"(?<image>!\[(?<imgAlt>[^\]]*)\]\((?<imgUrl>[^)]+)\))";
 
-            // Bold+Italic: ***text*** (обрабатывается ПЕРЕД одиночными ** и *)
-            foreach (Match m in Regex.Matches(text, @"\*\*\*(.+?)\*\*\*", RegexOptions.Singleline))
+            foreach (Match m in Regex.Matches(text, pattern, RegexOptions.Singleline))
             {
-                edits.Add(new InlineEdit
-                {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.BoldItalic
-                });
-            }
+                InlineFormat format = InlineFormat.None;
+                int innerStart = 0, innerEnd = 0;
+                string extraData = ""; // Для хранения URL ссылки или картинки
 
-
-            // ✅ Bold: **text**
-            foreach (Match m in Regex.Matches(text, @"\*\*(.+?)\*\*", RegexOptions.Singleline))
-            {
-                edits.Add(new InlineEdit
+                if (m.Groups["code"].Success)
                 {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.Bold
-                });
-            }
-
-            // ✅ Underline: __text__
-            foreach (Match m in Regex.Matches(text, @"__(.+?)__", RegexOptions.Singleline))
-            {
-                edits.Add(new InlineEdit
+                    format = InlineFormat.Code;
+                    innerStart = m.Groups["codeInner"].Index;
+                    innerEnd = innerStart + m.Groups["codeInner"].Length;
+                }
+                else if (m.Groups["bolditalic"].Success)
                 {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.Underline
-                });
-            }
-
-            // ✅ Strikethrough: ~~text~~
-            foreach (Match m in Regex.Matches(text, @"~~(.+?)~~", RegexOptions.Singleline))
-            {
-                edits.Add(new InlineEdit
+                    format = InlineFormat.BoldItalic;
+                    innerStart = m.Groups["biInner"].Index;
+                    innerEnd = innerStart + m.Groups["biInner"].Length;
+                }
+                else if (m.Groups["bold"].Success)
                 {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.Strikethrough
-                });
-            }
-
-            // ✅ Italic: *text* (но не **, с negative lookbehind/lookahead)
-            foreach (Match m in Regex.Matches(text, @"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", RegexOptions.Singleline))
-            {
-                edits.Add(new InlineEdit
+                    format = InlineFormat.Bold;
+                    innerStart = m.Groups["bInner"].Index;
+                    innerEnd = innerStart + m.Groups["bInner"].Length;
+                }
+                else if (m.Groups["italic"].Success)
                 {
-                    fullStart = rangeStart + m.Index,
-                    fullEnd = rangeStart + m.Index + m.Length,
-                    innerStart = rangeStart + m.Groups[1].Index,
-                    innerEnd = rangeStart + m.Groups[1].Index + m.Groups[1].Length,
-                    format = InlineFormat.Italic
-                });
+                    format = InlineFormat.Italic;
+                    innerStart = m.Groups["iInner"].Index;
+                    innerEnd = innerStart + m.Groups["iInner"].Length;
+                }
+                else if (m.Groups["underline"].Success)
+                {
+                    format = InlineFormat.Underline;
+                    innerStart = m.Groups["uInner"].Index;
+                    innerEnd = innerStart + m.Groups["uInner"].Length;
+                }
+                else if (m.Groups["strike"].Success)
+                {
+                    format = InlineFormat.Strikethrough;
+                    innerStart = m.Groups["sInner"].Index;
+                    innerEnd = innerStart + m.Groups["sInner"].Length;
+                }
+                else if (m.Groups["link"].Success)
+                {
+                    format = InlineFormat.Link;
+                    innerStart = m.Groups["linkText"].Index;
+                    innerEnd = innerStart + m.Groups["linkText"].Length;
+                    extraData = m.Groups["linkUrl"].Value;
+                }
+                else if (m.Groups["image"].Success)
+                {
+                    format = InlineFormat.Image;
+                    // Для картинки мы заменяем весь матч на изображение, innerStart/End не так важны, 
+                    // но оставим их для совместимости логики удаления маркеров
+                    innerStart = m.Index;
+                    innerEnd = m.Index + m.Length;
+                    extraData = m.Groups["imgUrl"].Value;
+                }
+
+                if (format != InlineFormat.None)
+                {
+                    edits.Add(new InlineEdit
+                    {
+                        fullStart = rangeStart + m.Index,
+                        fullEnd = rangeStart + m.Index + m.Length,
+                        innerStart = rangeStart + innerStart,
+                        innerEnd = rangeStart + innerEnd,
+                        format = format,
+                        extraData = extraData
+                    });
+                }
             }
 
             if (edits.Count == 0) return;
 
-            // Сортируем с конца к началу, чтобы удаление маркеров не сбивало позиции
             edits.Sort((a, b) => b.fullStart.CompareTo(a.fullStart));
 
-            // Убираем перекрывающиеся правки (например, если ** оказался внутри ```)
-            // Code имеет высший приоритет — вложенные в него маркеры отсеиваются
-            var validEdits = new List<InlineEdit>();
             foreach (var edit in edits)
-            {
-                bool overlaps = false;
-                foreach (var existing in validEdits)
-                {
-                    // Проверка перекрытия интервалов
-                    if (edit.fullStart < existing.fullEnd && edit.fullEnd > existing.fullStart)
-                    {
-                        overlaps = true;
-                        break;
-                    }
-                }
-                if (!overlaps)
-                {
-                    validEdits.Add(edit);
-                }
-            }
-
-            // Применяем правки
-            foreach (var edit in validEdits)
             {
                 try
                 {
-                    // Форматирование внутреннего текста
                     var innerRange = Doc.Range(edit.innerStart, edit.innerEnd);
 
                     switch (edit.format)
                     {
                         case InlineFormat.Bold:
                             innerRange.Font.Bold = 1;
+                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ для вложенности!
                             break;
                         case InlineFormat.Italic:
                             innerRange.Font.Italic = 1;
+                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ
                             break;
-                        case InlineFormat.BoldItalic:   
+                        case InlineFormat.BoldItalic:
                             innerRange.Font.Bold = 1;
                             innerRange.Font.Italic = 1;
+                            ApplyInlineFormatting(innerRange); // ✅ РЕКУРСИЯ
                             break;
                         case InlineFormat.Underline:
                             innerRange.Font.Underline = Word.WdUnderline.wdUnderlineSingle;
@@ -1611,24 +1718,103 @@ namespace Styles
                             break;
                         case InlineFormat.Code:
                             innerRange.Font.Name = "Courier New";
+                            innerRange.Font.Size = 11;
                             innerRange.ParagraphFormat.LineSpacingRule = Word.WdLineSpacing.wdLineSpaceSingle;
+                            break;
+                        case InlineFormat.Link:
+                            innerRange.Text = edit.extraData; // Сначала вставляем URL как текст
+                                                              // Создаем гиперссылку поверх этого текста
+                            Doc.Hyperlinks.Add(innerRange, edit.extraData, Type.Missing, Type.Missing, edit.extraData, Type.Missing);
+                            innerRange.Font.Color = Word.WdColor.wdColorBlue;
+                            innerRange.Font.Underline = Word.WdUnderline.wdUnderlineSingle;
+                            break;
+                        case InlineFormat.Image:
+                            try
+                            {
+                                // Пытаемся вставить картинку по URL. 
+                                // LinkToFile: false, SaveWithDocument: true
+                                var shape = innerRange.InlineShapes.AddPicture(edit.extraData, false, true);
+                                shape.AlternativeText = "Markdown Image";
+                            }
+                            catch
+                            {
+                                // Если Word блокирует URL или он невалидный, вставляем заглушку
+                                innerRange.Text = $"[🖼 Изображение: {edit.extraData}]";
+                                innerRange.Font.Color = Word.WdColor.wdColorRed;
+                                innerRange.Font.Italic = 1;
+                            }
                             break;
                     }
 
-                    // Удаляем конечный маркер (сначала, т.к. он дальше в документе)
+                    // Удаляем маркеры (для Link и Image это удалит исходный markdown-синтаксис)
                     var endMarker = Doc.Range(edit.innerEnd, edit.fullEnd);
-                    endMarker.Text = "";
+                    endMarker.Delete();
 
-                    // Удаляем начальный маркер
                     var startMarker = Doc.Range(edit.fullStart, edit.innerStart);
-                    startMarker.Text = "";
+                    startMarker.Delete();
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"Inline format error: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[Markdown Inline Error] {ex.Message}");
                 }
             }
         }
-    }
 
+        /// <summary>
+        /// ✅ НОВОЕ: Простая форма с прогресс-баром для отображения процесса вставки
+        /// </summary>
+        public class MarkdownProgressForm : Form
+        {
+            public ProgressBar ProgressBar { get; private set; }
+            public Label StatusLabel { get; private set; }
+
+            public MarkdownProgressForm(int maxLines)
+            {
+                this.Width = 400;
+                this.Height = 120;
+                this.Text = "Вставка Markdown...";
+                this.FormBorderStyle = FormBorderStyle.FixedDialog;
+                this.StartPosition = FormStartPosition.CenterScreen;
+                this.TopMost = true;
+                this.ControlBox = false; // Убираем крестик, чтобы пользователь не закрыл его случайно
+
+                StatusLabel = new Label
+                {
+                    Text = "Подготовка...",
+                    Location = new System.Drawing.Point(15, 15),
+                    Width = 350,
+                    Height = 20,
+                    Font = new System.Drawing.Font("Segoe UI", 9f)
+                };
+
+                ProgressBar = new ProgressBar
+                {
+                    Location = new System.Drawing.Point(15, 45),
+                    Width = 350,
+                    Height = 20,
+                    Minimum = 0,
+                    Maximum = maxLines > 0 ? maxLines : 100,
+                    Style = ProgressBarStyle.Continuous
+                };
+
+                this.Controls.Add(StatusLabel);
+                this.Controls.Add(ProgressBar);
+            }
+
+            public void UpdateProgress(int currentLine, int totalLines, string currentAction)
+            {
+                if (this.InvokeRequired)
+                {
+                    this.Invoke(new Action(() => UpdateProgress(currentLine, totalLines, currentAction)));
+                    return;
+                }
+
+                ProgressBar.Value = Math.Min(currentLine, ProgressBar.Maximum);
+                StatusLabel.Text = $"{currentAction} (строка {currentLine} из {totalLines})";
+
+                // ✅ Ключевой момент для VSTO: позволяем форме перерисоваться и Word'у обработать сообщения
+                System.Windows.Forms.Application.DoEvents();
+            }
+        }
+    }
 }
